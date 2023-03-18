@@ -39,37 +39,30 @@ with DefaultParamsWritable {
 
   override def fit(dataset: Dataset[_]): LinearRegressionModel = {
 
-    // Used to convert untyped dataframes to datasets with vectors
-    implicit val encoder : Encoder[Vector] = ExpressionEncoder()
-    implicit val encoder2 : Encoder[Double] = ExpressionEncoder()
-
-    val vectors: Dataset[Vector] = dataset.select(dataset($(featuresCol)).as[Vector])
-    val labels: Dataset[Double] = dataset.select(dataset($(labelCol)).as[Double])
-    val max_interations: Int = 100
+    val numIterations: Int = 2000
     val lr: Double = 0.001
-    val n: Double = dataset.count()
 
-    val dim: Int = AttributeGroup.fromStructField((dataset.schema($(featuresCol)))).numAttributes.getOrElse(
-      vectors.first().size
-    )
-    val weights = Vectors.zeros(dim)
+    val numFeatures = dataset.select(dataset($(featuresCol))).first.getAs[Vector](0).size
+    var weights = Vectors.dense(Array.fill(numFeatures)(0.0))
     var bias = 1.0
-
-    var i = 0
-    while (i < max_interations) {
-      // Calculate gradients
-      val gradients = dataset.rdd.map(row => {
-        val features = row.getAs[Vector]($(featuresCol))
-        val label = row.getAs[Double]($(labelCol))
+    
+    // Perform gradient descent for the specified number of iterations
+    for (i <- 0 until numIterations) {
+        val gradient = dataset.select(dataset($(featuresCol)), dataset($(labelCol))).rdd.map { row =>
+        val features = row.getAs[Vector](0)
+        val label = row.getDouble(1)
         val prediction = weights.dot(features) + bias
         val error = prediction - label
-        val gradientW = features * error
-        val gradientB = error
-        (gradientW, gradientB)
-      }).reduce((a, b) => (a._1 + b._1, a._2 + b._2))
-        weights.toArray.indices.foreach(j => weights.toArray.update(j, weights.toArray(j) - lr * gradients._1.toArray(j) / assembledData.count()))
-        bias -= lr * gradients._2 / dataset.count()
-        i += 1
+        val weightGradient = features.toArray.map(_ * error)
+        val biasGradient = error
+        (Vectors.dense(weightGradient), biasGradient)
+        }.reduce { case ((w1, b1), (w2, b2)) =>
+        (Vectors.dense((w1.toArray, w2.toArray).zipped.map(_ + _)), b1 + b2)
+        }
+        
+        // Update the weights and bias
+        weights = Vectors.dense((weights.toArray, gradient._1.toArray).zipped.map(_ - lr * _))
+        bias -= lr * gradient._2
     }
 
     copyValues(new LinearRegressionModel(
